@@ -3,14 +3,17 @@ import { useEffect, useMemo, useState } from "react";
 import {
   BadgeCheck,
   ChevronDown,
+  ExternalLink,
   Leaf,
   Loader2,
   MapPin,
   Search,
   X,
 } from "lucide-react";
-import { getAllTokens, insertPurchase } from "@/lib/db";
+import { getAllTokens, insertPurchase, updatePurchaseBurnHash, updateTokenStatus } from "@/lib/db";
 import { generateDecentroPayment } from "@/lib/api";
+import { burnTokens } from "@/lib/blockchain";
+import { CONFIG } from "@/lib/config";
 import { farmImageForId, IMAGES } from "@/lib/images";
 import { SiteFooter } from "@/components/SiteFooter";
 
@@ -218,10 +221,13 @@ function PurchaseModal({ token, onClose }: { token: Token; onClose: () => void }
   const [company, setCompany] = useState("");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState<"form" | "burning" | "done">("form");
+  const [burnHash, setBurnHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const total = token.price_inr ?? 0;
-  const farmerShare = total * 0.9;
+  const total       = token.price_inr ?? 0;
+  const farmerShare = total * CONFIG.pricing.farmerPayoutPercent;
+  const platformFee = total * CONFIG.pricing.platformFeePercent;
 
   async function confirm() {
     setError(null);
@@ -231,8 +237,11 @@ function PurchaseModal({ token, onClose }: { token: Token; onClose: () => void }
     }
     setBusy(true);
     try {
+      // Step 1 — Generate payment link
       const payment = await generateDecentroPayment(total, buyerName, token.id);
       const certificateId = `KC-${Date.now().toString(36).toUpperCase()}`;
+
+      // Step 2 — Save purchase record
       const purchase = await insertPurchase({
         token_id: token.id,
         farmer_id: token.farmer_id,
@@ -241,14 +250,38 @@ function PurchaseModal({ token, onClose }: { token: Token; onClose: () => void }
         buyer_email: email,
         amount_paid: total,
         farmer_payout: farmerShare,
-        platform_fee: total * 0.1,
+        platform_fee:  platformFee,
         decentro_payment_ref: payment?.payment_ref ?? null,
         certificate_id: certificateId,
         status: "pending",
       });
-      navigate({ to: "/certificate/$id", params: { id: purchase.id } });
+
+      // Step 3 — Burn token on blockchain
+      setStep("burning");
+      const tokenId = token.polygonscan_hash ?? "0"; // use on-chain tokenId
+      console.log("[registry] burning tokenId =", tokenId);
+
+      try {
+        const { txHash } = await burnTokens(tokenId);
+        setBurnHash(txHash);
+        console.log("[registry] burn txHash =", txHash);
+
+        // Step 4 — Save burn hash + mark token as sold
+        await updatePurchaseBurnHash(purchase.id, txHash);
+        await updateTokenStatus(token.id, "sold");
+
+        setStep("done");
+        setTimeout(() => {
+          navigate({ to: "/certificate/$id", params: { id: purchase.id } });
+        }, 2000);
+      } catch (burnErr: any) {
+        // Burn failed — still go to certificate (burn can be retried)
+        console.warn("[registry] burn failed, continuing:", burnErr?.message);
+        navigate({ to: "/certificate/$id", params: { id: purchase.id } });
+      }
     } catch (e: any) {
       setError(e?.message ?? "Purchase could not be completed.");
+      setStep("form");
     } finally {
       setBusy(false);
     }
@@ -257,69 +290,106 @@ function PurchaseModal({ token, onClose }: { token: Token; onClose: () => void }
   return (
     <div
       className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4"
-      onClick={onClose}
+      onClick={step === "form" ? onClose : undefined}
     >
       <div
         className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="relative h-32">
-          <img
-            src={farmImageForId(token.id)}
-            alt=""
-            className="w-full h-full object-cover"
-          />
-          <button
-            type="button"
-            onClick={onClose}
-            className="absolute top-3 right-3 w-9 h-9 rounded-full bg-white/90 flex items-center justify-center"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <img src={farmImageForId(token.id)} alt="" className="w-full h-full object-cover" />
+          {step === "form" && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="absolute top-3 right-3 w-9 h-9 rounded-full bg-white/90 flex items-center justify-center"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
         </div>
 
         <div className="p-6">
-          <h2 className="text-xl font-bold">Complete your purchase</h2>
-          <p className="text-sm text-foreground/60 mt-1">
-            {(token.co2_tonnes ?? 0).toFixed(1)} tonnes CO₂ · {token.village}, {token.taluka}
-          </p>
-
-          <div className="mt-5 space-y-3">
-            <div>
-              <label className="kc-label">Your name</label>
-              <input className="kc-input" value={buyerName} onChange={(e) => setBuyerName(e.target.value)} />
+          {/* ── Burning state ── */}
+          {step === "burning" && (
+            <div className="text-center py-6">
+              <Loader2 className="w-10 h-10 animate-spin text-primary mx-auto mb-4" />
+              <p className="font-bold text-lg">Retiring token on blockchain…</p>
+              <p className="text-sm text-foreground/60 mt-1">
+                Please confirm the transaction in MetaMask.
+              </p>
             </div>
-            <div>
-              <label className="kc-label">Company</label>
-              <input className="kc-input" value={company} onChange={(e) => setCompany(e.target.value)} />
-            </div>
-            <div>
-              <label className="kc-label">Work email</label>
-              <input type="email" className="kc-input" value={email} onChange={(e) => setEmail(e.target.value)} />
-            </div>
-          </div>
+          )}
 
-          <div className="mt-5 p-4 rounded-lg bg-[#f0f7f0] text-sm">
-            <div className="flex justify-between font-bold text-lg">
-              <span>Total</span>
-              <span>₹ {total.toLocaleString("en-IN")}</span>
+          {/* ── Done state ── */}
+          {step === "done" && burnHash && (
+            <div className="text-center py-6">
+              <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
+                <BadgeCheck className="w-8 h-8 text-green-600" />
+              </div>
+              <p className="font-bold text-lg text-green-700">Token permanently retired</p>
+              <a
+                href={`https://amoy.polygonscan.com/tx/${burnHash}`}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-3 inline-flex items-center gap-1 text-sm text-secondary hover:underline"
+              >
+                View burn on Polygonscan <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+              <p className="text-xs text-foreground/50 mt-3">Redirecting to certificate…</p>
             </div>
-            <p className="text-primary text-xs mt-2 font-medium">
-              ₹ {farmerShare.toLocaleString("en-IN")} goes to the farmer (90%)
-            </p>
-          </div>
+          )}
 
-          {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+          {/* ── Form state ── */}
+          {step === "form" && (
+            <>
+              <h2 className="text-xl font-bold">Complete your purchase</h2>
+              <p className="text-sm text-foreground/60 mt-1">
+                {(token.co2_tonnes ?? 0).toFixed(1)} tonnes CO₂ · {token.village}, {token.taluka}
+              </p>
 
-          <button
-            type="button"
-            onClick={confirm}
-            disabled={busy}
-            className="mt-5 w-full kc-btn-primary py-3.5 rounded-lg inline-flex items-center justify-center gap-2"
-          >
-            {busy && <Loader2 className="w-4 h-4 animate-spin" />}
-            {busy ? "Processing…" : "Pay & get certificate"}
-          </button>
+              <div className="mt-5 space-y-3">
+                <div>
+                  <label className="kc-label">Your name</label>
+                  <input className="kc-input" value={buyerName} onChange={(e) => setBuyerName(e.target.value)} />
+                </div>
+                <div>
+                  <label className="kc-label">Company</label>
+                  <input className="kc-input" value={company} onChange={(e) => setCompany(e.target.value)} />
+                </div>
+                <div>
+                  <label className="kc-label">Work email</label>
+                  <input type="email" className="kc-input" value={email} onChange={(e) => setEmail(e.target.value)} />
+                </div>
+              </div>
+
+              <div className="mt-5 p-4 rounded-lg bg-[#f0f7f0] text-sm">
+                <div className="flex justify-between font-bold text-lg">
+                  <span>Total</span>
+                  <span>₹ {total.toLocaleString("en-IN")}</span>
+                </div>
+                <p className="text-primary text-xs mt-2 font-medium">
+                  ₹ {farmerShare.toLocaleString("en-IN")} goes to the farmer (90%)
+                </p>
+              </div>
+
+              {error && (
+                <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+                  {error}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={confirm}
+                disabled={busy}
+                className="mt-5 w-full kc-btn-primary py-3.5 rounded-lg inline-flex items-center justify-center gap-2"
+              >
+                {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+                {busy ? "Processing…" : "Pay & get certificate"}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

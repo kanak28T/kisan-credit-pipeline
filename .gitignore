@@ -22,6 +22,9 @@ dist-ssr
 # Cursor MCP (contains Supabase access token)
 .cursor/mcp.json
 
+# Kiro MCP (contains Supabase access token)
+.kiro/settings/mcp.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -1,78 +1,114 @@
+/**
+ * All blockchain interactions — MetaMask + Polygon Amoy + GEPCC contract.
+ * Components never use ethers directly; they call these functions.
+ */
 import { ethers } from "ethers";
+import { CONFIG } from "./config";
 
-// ── Contract config ──────────────────────────────────────────────────────────
-const CONTRACT_ADDRESS =
-  import.meta.env.VITE_CONTRACT_ADDRESS ?? "0xd9145CCE52D386f254917e481eB44e9943F39138";
+// ── ABI ───────────────────────────────────────────────────────────────────────
 
-const ABI = [
-  "function mintToken(address farmer, string farmerId, string gpsLat, string gpsLon, string ndviScore, string co2Tonnes, uint256 amount) public",
+const CONTRACT_ABI = [
+  "function mintToken(address, string, string, string, string, string, uint256) public",
   "function burnToken(uint256 tokenId) public",
   "function getTokenDetails(uint256 tokenId) public view returns (tuple(string farmerId, string gpsLat, string gpsLon, string ndviScore, string co2Tonnes, bool burned))",
   "function tokenCounter() public view returns (uint256)",
+  "event TokenMinted(uint256 indexed tokenId, string farmerId, string co2Tonnes, string ndviScore, string gpsLat, string gpsLon)",
+  "event TokenBurned(uint256 indexed tokenId, string farmerId, string co2Tonnes)",
 ];
 
-// Polygon Amoy testnet
-const POLYGON_AMOY = {
-  chainId: "0x13882", // 80002 in hex
-  chainName: "Polygon Amoy Testnet",
-  nativeCurrency: { name: "MATIC", symbol: "MATIC", decimals: 18 },
-  rpcUrls: ["https://rpc-amoy.polygon.technology/"],
-  blockExplorerUrls: ["https://amoy.polygonscan.com/"],
-};
+// ── Provider / Signer helpers ─────────────────────────────────────────────────
 
-// ── 1. connectWallet ─────────────────────────────────────────────────────────
-export async function connectWallet(): Promise<{
-  signer: ethers.Signer;
-  address: string;
-  provider: ethers.BrowserProvider;
-}> {
-  console.log("[blockchain] connectWallet: starting...");
-
-  if (!window.ethereum) {
-    throw new Error("MetaMask is not installed. Please install MetaMask to continue.");
+export function getProvider(): ethers.Provider {
+  if (typeof window !== "undefined" && window.ethereum) {
+    return new ethers.BrowserProvider(window.ethereum);
   }
-
-  const provider = new ethers.BrowserProvider(window.ethereum);
-
-  // Request account access
-  console.log("[blockchain] connectWallet: requesting accounts...");
-  await provider.send("eth_requestAccounts", []);
-
-  // Check current network
-  const network = await provider.getNetwork();
-  console.log("[blockchain] connectWallet: current chainId =", network.chainId.toString());
-
-  // Switch to Polygon Amoy if needed
-  if (network.chainId !== 80002n) {
-    console.log("[blockchain] connectWallet: switching to Polygon Amoy (80002)...");
-    try {
-      await window.ethereum.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: POLYGON_AMOY.chainId }],
-      });
-    } catch (switchError: any) {
-      // Chain not added yet — add it
-      if (switchError.code === 4902) {
-        console.log("[blockchain] connectWallet: Amoy not found, adding network...");
-        await window.ethereum.request({
-          method: "wallet_addEthereumChain",
-          params: [POLYGON_AMOY],
-        });
-      } else {
-        throw switchError;
-      }
-    }
-  }
-
-  const signer = await provider.getSigner();
-  const address = await signer.getAddress();
-  console.log("[blockchain] connectWallet: connected wallet =", address);
-
-  return { signer, address, provider };
+  console.log("[blockchain] getProvider: no MetaMask, using public RPC");
+  return new ethers.JsonRpcProvider(CONFIG.blockchain.rpcUrl);
 }
 
-// ── 2. mintToken ─────────────────────────────────────────────────────────────
-export async function mintToken(
+export async function connectWallet(): Promise<{ address: string; chainId: number }> {
+  console.log("[blockchain] connectWallet: starting...");
+  try {
+    if (!window.ethereum) {
+      throw new Error("MetaMask is not installed. Please install MetaMask to continue.");
+    }
+
+    const provider = new ethers.BrowserProvider(window.ethereum);
+
+    console.log("[blockchain] connectWallet: requesting accounts...");
+    await provider.send("eth_requestAccounts", []);
+
+    const network = await provider.getNetwork();
+    console.log("[blockchain] connectWallet: chainId =", network.chainId.toString());
+
+    if (network.chainId !== BigInt(CONFIG.blockchain.chainId)) {
+      console.log("[blockchain] connectWallet: switching to Amoy...");
+      try {
+        await window.ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: CONFIG.blockchain.chainIdHex }],
+        });
+        console.log("[blockchain] connectWallet: switched to Amoy");
+      } catch (switchErr: any) {
+        if (switchErr.code === 4902) {
+          console.log("[blockchain] connectWallet: adding Amoy network...");
+          await window.ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [{
+              chainId:           CONFIG.blockchain.chainIdHex,
+              chainName:         CONFIG.blockchain.chainName,
+              nativeCurrency:    CONFIG.blockchain.nativeCurrency,
+              rpcUrls:           [CONFIG.blockchain.rpcUrl],
+              blockExplorerUrls: [CONFIG.blockchain.explorerUrl],
+            }],
+          });
+          console.log("[blockchain] connectWallet: Amoy added");
+        } else {
+          throw switchErr;
+        }
+      }
+    }
+
+    const signer  = await provider.getSigner();
+    const address = await signer.getAddress();
+    console.log("[blockchain] connectWallet: address =", address);
+
+    return { address, chainId: CONFIG.blockchain.chainId };
+  } catch (e: any) {
+    console.error("[blockchain] connectWallet: error =", e?.message);
+    throw e;
+  }
+}
+
+export async function getSigner(): Promise<ethers.Signer> {
+  await connectWallet();
+  const provider = new ethers.BrowserProvider(window.ethereum);
+  return provider.getSigner();
+}
+
+export function getContract(withSigner = false): ethers.Contract | Promise<ethers.Contract> {
+  if (withSigner) {
+    return getSigner().then(
+      (signer) => new ethers.Contract(CONFIG.blockchain.contractAddress, CONTRACT_ABI, signer),
+    );
+  }
+  return new ethers.Contract(CONFIG.blockchain.contractAddress, CONTRACT_ABI, getProvider());
+}
+
+export async function getWalletAddress(): Promise<string | null> {
+  try {
+    if (!window.ethereum) return null;
+    const provider = new ethers.BrowserProvider(window.ethereum);
+    const accounts = await provider.send("eth_accounts", []);
+    return accounts[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Mint ──────────────────────────────────────────────────────────────────────
+
+export async function mintTokens(
   farmerId: string,
   gpsLat: string,
   gpsLon: string,
@@ -80,69 +116,62 @@ export async function mintToken(
   co2Tonnes: string,
   farmerAddress: string,
   amount: number,
-): Promise<{ txHash: string; tokenId: string }> {
-  console.log("[blockchain] mintToken: starting for farmer =", farmerId);
+): Promise<{ txHash: string; tokenId: string; receipt: ethers.TransactionReceipt }> {
+  console.log("[blockchain] mintTokens: farmer =", farmerId);
+  try {
+    const contract = await getContract(true) as ethers.Contract;
 
-  const { signer } = await connectWallet();
-  const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+    console.log("[blockchain] mintTokens: sending tx...");
+    const tx = await contract.mintToken(
+      farmerAddress,
+      farmerId,
+      gpsLat,
+      gpsLon,
+      ndviScore,
+      co2Tonnes,
+      BigInt(amount),
+    );
+    console.log("[blockchain] mintTokens: hash =", tx.hash);
 
-  console.log("[blockchain] mintToken: calling contract.mintToken...");
-  console.log("[blockchain] mintToken: params =", {
-    farmerAddress,
-    farmerId,
-    gpsLat,
-    gpsLon,
-    ndviScore,
-    co2Tonnes,
-    amount,
-  });
+    const receipt = await tx.wait();
+    console.log("[blockchain] mintTokens: confirmed block =", receipt.blockNumber);
 
-  const tx = await contract.mintToken(
-    farmerAddress,
-    farmerId,
-    gpsLat,
-    gpsLon,
-    ndviScore,
-    co2Tonnes,
-    BigInt(amount),
-  );
+    const counter = await contract.tokenCounter();
+    const tokenId = (counter - 1n).toString();
+    console.log("[blockchain] mintTokens: tokenId =", tokenId);
 
-  console.log("[blockchain] mintToken: transaction sent, hash =", tx.hash);
-  console.log("[blockchain] mintToken: waiting for confirmation...");
-
-  const receipt = await tx.wait();
-  console.log("[blockchain] mintToken: confirmed in block =", receipt.blockNumber);
-
-  // Read tokenCounter to get the latest tokenId (counter increments after mint)
-  const readContract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
-  const counter = await readContract.tokenCounter();
-  const tokenId = (counter - 1n).toString();
-
-  console.log("[blockchain] mintToken: tokenId =", tokenId);
-
-  return { txHash: tx.hash, tokenId };
+    return { txHash: tx.hash, tokenId, receipt };
+  } catch (e: any) {
+    console.error("[blockchain] mintTokens: error =", e?.message);
+    throw e;
+  }
 }
 
-// ── 3. burnToken ─────────────────────────────────────────────────────────────
-export async function burnToken(tokenId: string): Promise<{ txHash: string }> {
-  console.log("[blockchain] burnToken: starting for tokenId =", tokenId);
+// ── Burn ──────────────────────────────────────────────────────────────────────
 
-  const { signer } = await connectWallet();
-  const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+export async function burnTokens(
+  tokenId: string,
+): Promise<{ txHash: string; receipt: ethers.TransactionReceipt }> {
+  console.log("[blockchain] burnTokens: tokenId =", tokenId);
+  try {
+    const contract = await getContract(true) as ethers.Contract;
 
-  console.log("[blockchain] burnToken: calling contract.burnToken...");
-  const tx = await contract.burnToken(BigInt(tokenId));
+    console.log("[blockchain] burnTokens: sending tx...");
+    const tx = await contract.burnToken(BigInt(tokenId));
+    console.log("[blockchain] burnTokens: hash =", tx.hash);
 
-  console.log("[blockchain] burnToken: transaction sent, hash =", tx.hash);
-  console.log("[blockchain] burnToken: waiting for confirmation...");
+    const receipt = await tx.wait();
+    console.log("[blockchain] burnTokens: confirmed block =", receipt.blockNumber);
 
-  const receipt = await tx.wait();
-  console.log("[blockchain] burnToken: confirmed in block =", receipt.blockNumber);
-
-  return { txHash: tx.hash };
+    return { txHash: tx.hash, receipt };
+  } catch (e: any) {
+    console.error("[blockchain] burnTokens: error =", e?.message);
+    throw e;
+  }
 }
 
-// ── 4. getTokenDetails ───────────────────────────────────────────────────────
+// ── Read ──────────────────────────────────────────────────────────────────────
+
 export async function getTokenDetails(tokenId: string): Promise<{
   farmerId: string;
   gpsLat: string;
@@ -151,31 +180,26 @@ export async function getTokenDetails(tokenId: string): Promise<{
   co2Tonnes: string;
   burned: boolean;
 }> {
-  console.log("[blockchain] getTokenDetails: fetching tokenId =", tokenId);
-
-  // Use a read-only provider — no wallet needed for view functions
-  let provider: ethers.Provider;
-
-  if (window.ethereum) {
-    provider = new ethers.BrowserProvider(window.ethereum);
-  } else {
-    provider = new ethers.JsonRpcProvider(POLYGON_AMOY.rpcUrls[0]);
+  console.log("[blockchain] getTokenDetails: tokenId =", tokenId);
+  try {
+    const contract = getContract(false) as ethers.Contract;
+    const result   = await contract.getTokenDetails(BigInt(tokenId));
+    const details  = {
+      farmerId:  result.farmerId,
+      gpsLat:    result.gpsLat,
+      gpsLon:    result.gpsLon,
+      ndviScore: result.ndviScore,
+      co2Tonnes: result.co2Tonnes,
+      burned:    result.burned,
+    };
+    console.log("[blockchain] getTokenDetails: result =", details);
+    return details;
+  } catch (e: any) {
+    console.error("[blockchain] getTokenDetails: error =", e?.message);
+    throw e;
   }
-
-  const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, provider);
-
-  console.log("[blockchain] getTokenDetails: calling contract.getTokenDetails...");
-  const result = await contract.getTokenDetails(BigInt(tokenId));
-
-  const details = {
-    farmerId: result.farmerId,
-    gpsLat: result.gpsLat,
-    gpsLon: result.gpsLon,
-    ndviScore: result.ndviScore,
-    co2Tonnes: result.co2Tonnes,
-    burned: result.burned,
-  };
-
-  console.log("[blockchain] getTokenDetails: result =", details);
-  return details;
 }
+
+// ── Legacy aliases ────────────────────────────────────────────────────────────
+export const mintToken = mintTokens;
+export const burnToken = burnTokens;

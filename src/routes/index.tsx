@@ -88,8 +88,8 @@ function Landing() {
           <div className="rounded-2xl overflow-hidden border border-border shadow-md bg-white">
             <img
               src={IMAGES.farmerPortrait}
-              alt="Farmer in the field"
-              className="w-full h-52 object-cover"
+              alt="Indian farmer standing in cotton field"
+              className="w-full h-52 object-cover object-top"
               loading="lazy"
             />
             <div className="p-6">
@@ -123,9 +123,9 @@ function Landing() {
 
           <div className="rounded-2xl overflow-hidden border border-border shadow-md bg-white">
             <img
-              src={IMAGES.buyerForest}
-              alt="Green landscape — carbon offset"
-              className="w-full h-52 object-cover"
+              src={IMAGES.buyerOffice}
+              alt="Corporate professional in a sustainable office"
+              className="w-full h-52 object-cover object-center"
               loading="lazy"
             />
             <div className="p-6">

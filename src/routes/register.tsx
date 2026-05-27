@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { MapPin, CheckCircle2, Loader2 } from "lucide-react";
 import { insertFarmer, type FarmerInput } from "@/lib/db";
 import { triggerN8NWebhook } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
-import { isNagpurTaluka, NAGPUR_TALUKAS } from "@/lib/nagpur";
+import { isNagpurTaluka, NAGPUR_TALUKAS, getVillagesForTaluka } from "@/lib/nagpur";
 import { requireAuth } from "@/lib/auth-guard";
 import { IMAGES } from "@/lib/images";
 
@@ -26,21 +26,24 @@ const emptyForm: FarmerInput = {
 
 function RegisterPage() {
   const { user, loading } = useAuth();
-  const [form, setForm] = useState<FarmerInput>(emptyForm);  const [gpsCaptured, setGpsCaptured] = useState(false);
+  const [form, setForm] = useState<FarmerInput>(emptyForm);
+  const [gpsCaptured, setGpsCaptured] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!loading && !user) {
-      window.location.href = "/login";
-    }
-  }, [user, loading]);
-
   function update<K extends keyof FarmerInput>(k: K, v: FarmerInput[K]) {
     setForm((f) => ({ ...f, [k]: v }));
   }
+
+  // When taluka changes, reset village
+  function handleTalukaChange(taluka: string) {
+    setForm((f) => ({ ...f, taluka, village: "" }));
+  }
+
+  // Villages for currently selected taluka
+  const villages = form.taluka ? getVillagesForTaluka(form.taluka) : [];
 
   function captureGPS() {
     setError(null);
@@ -68,16 +71,25 @@ function RegisterPage() {
     e.preventDefault();
     setError(null);
 
-    if (!form.name || !form.mobile || !form.taluka || !form.village || !form.gat_number) {
-      setError("कृपया सर्व माहिती भरा.");
+    // Validation
+    if (!form.name.trim()) {
+      setError("कृपया पूर्ण नाव भरा.");
       return;
     }
-    if (!isNagpurTaluka(form.taluka)) {
+    if (!form.mobile || !/^\d{10}$/.test(form.mobile)) {
+      setError("मोबाईल नंबर 10 अंकी असावा.");
+      return;
+    }
+    if (!form.taluka || !isNagpurTaluka(form.taluka)) {
       setError("फक्त नागपूर जिल्ह्यातील तालुका निवडा.");
       return;
     }
-    if (form.mobile.length !== 10 || !/^\d{10}$/.test(form.mobile)) {
-      setError("मोबाईल 10 अंकी असावा.");
+    if (!form.village) {
+      setError("कृपया गाव निवडा.");
+      return;
+    }
+    if (!form.gat_number.trim()) {
+      setError("कृपया गट नंबर भरा.");
       return;
     }
     if (!form.latitude || !form.longitude) {
@@ -91,8 +103,13 @@ function RegisterPage() {
 
     setSubmitting(true);
     try {
+      // Step 1 — Save to Supabase
       const farmer = await insertFarmer(form);
-      triggerN8NWebhook(farmer.id, farmer).catch(() => undefined);
+
+      // Step 2 — Trigger n8n automation (non-blocking)
+      triggerN8NWebhook({ ...farmer }).catch(() => undefined);
+
+      // Step 3 — Show success
       setSuccess(true);
       setForm(emptyForm);
       setGpsCaptured(false);
@@ -114,6 +131,7 @@ function RegisterPage() {
 
   return (
     <div className="min-h-[calc(100vh-65px)] grid lg:grid-cols-2">
+      {/* Left hero panel */}
       <aside className="relative min-h-[280px] lg:min-h-full">
         <img
           src={IMAGES.ruralLandscape}
@@ -147,6 +165,7 @@ function RegisterPage() {
         </div>
       </aside>
 
+      {/* Right form panel */}
       <section className="bg-white p-6 md:p-10 lg:p-12 overflow-y-auto">
         <div className="max-w-lg mx-auto">
           <h1 className="text-2xl md:text-3xl font-bold text-foreground">शेताची माहिती</h1>
@@ -173,6 +192,8 @@ function RegisterPage() {
           )}
 
           <form onSubmit={handleSubmit} className="mt-6 space-y-5">
+
+            {/* Name */}
             <BigField label="पूर्ण नाव">
               <input
                 className="kc-input-lg"
@@ -182,44 +203,67 @@ function RegisterPage() {
               />
             </BigField>
 
+            {/* Mobile — strictly 10 digits */}
             <BigField label="मोबाईल नंबर">
               <input
                 className="kc-input-lg"
                 value={form.mobile}
-                onChange={(e) => update("mobile", e.target.value.replace(/\D/g, "").slice(0, 10))}
+                onChange={(e) => {
+                  const digits = e.target.value.replace(/\D/g, "").slice(0, 10);
+                  update("mobile", digits);
+                }}
                 placeholder="9876543210"
                 inputMode="numeric"
+                maxLength={10}
               />
+              {form.mobile.length > 0 && form.mobile.length < 10 && (
+                <p className="mt-1 text-xs text-destructive">
+                  {10 - form.mobile.length} अंक बाकी आहेत
+                </p>
+              )}
+              {form.mobile.length === 10 && (
+                <p className="mt-1 text-xs text-primary font-medium">✓ 10 अंक</p>
+              )}
             </BigField>
 
+            {/* Taluka → Village (dependent dropdowns) */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
               <BigField label="तालुका (नागपूर)">
                 <select
                   className="kc-input-lg w-full"
                   value={form.taluka}
-                  onChange={(e) => update("taluka", e.target.value)}
+                  onChange={(e) => handleTalukaChange(e.target.value)}
                   required
                 >
-                  <option value="" disabled>
-                    तालुका निवडा
-                  </option>
+                  <option value="" disabled>तालुका निवडा</option>
                   {NAGPUR_TALUKAS.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
+                    <option key={t} value={t}>{t}</option>
                   ))}
                 </select>
               </BigField>
+
               <BigField label="गाव">
-                <input
-                  className="kc-input-lg"
-                  value={form.village}
-                  onChange={(e) => update("village", e.target.value)}
-                  placeholder="गावाचे नाव"
-                />
+                {villages.length > 0 ? (
+                  <select
+                    className="kc-input-lg w-full"
+                    value={form.village}
+                    onChange={(e) => update("village", e.target.value)}
+                    required
+                  >
+                    <option value="" disabled>गाव निवडा</option>
+                    {villages.map((v) => (
+                      <option key={v} value={v}>{v}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <select className="kc-input-lg w-full" disabled>
+                    <option>आधी तालुका निवडा</option>
+                  </select>
+                )}
               </BigField>
             </div>
 
+            {/* Gat Number */}
             <BigField label="गट नंबर">
               <input
                 className="kc-input-lg"
@@ -229,6 +273,7 @@ function RegisterPage() {
               />
             </BigField>
 
+            {/* Farm area */}
             <BigField label="शेताचे क्षेत्र (एकर)">
               <input
                 className="kc-input-lg"
@@ -241,24 +286,68 @@ function RegisterPage() {
               />
             </BigField>
 
-            <button
-              type="button"
-              onClick={captureGPS}
-              disabled={gpsLoading}
-              className={`w-full flex items-center justify-center gap-3 py-4 rounded-xl text-lg font-bold border-2 transition ${
-                gpsCaptured
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-secondary bg-secondary text-white"
-              }`}
-            >
-              {gpsLoading ? (
-                <Loader2 className="w-6 h-6 animate-spin" />
-              ) : (
-                <MapPin className="w-6 h-6" />
+            {/* GPS — with clear farm instruction */}
+            <div className="space-y-2">
+              {/* Instruction banner — shown before GPS is captured */}
+              {!gpsCaptured && (
+                <div className="flex items-start gap-3 p-3 rounded-xl bg-amber-50 border border-amber-200">
+                  <MapPin className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="font-bold text-amber-800">
+                      📍 शेतात जाऊन हे बटण दाबा
+                    </p>
+                    <p className="text-amber-700 mt-0.5">
+                      GPS location शेतातूनच घ्या — घरातून नाही.
+                      Satellite verification साठी exact farm location आवश्यक आहे.
+                    </p>
+                    <p className="text-amber-600 text-xs mt-1">
+                      Go to your farm first, then tap the button below.
+                    </p>
+                  </div>
+                </div>
               )}
-              {gpsCaptured ? "✓ शेताचे location मिळाले" : "शेताचे location घ्या (GPS)"}
-            </button>
 
+              <button
+                type="button"
+                onClick={captureGPS}
+                disabled={gpsLoading}
+                className={`w-full flex items-center justify-center gap-3 py-4 rounded-xl text-lg font-bold border-2 transition ${
+                  gpsCaptured
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-secondary bg-secondary text-white"
+                } disabled:opacity-60`}
+              >
+                {gpsLoading ? (
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                ) : (
+                  <MapPin className="w-6 h-6" />
+                )}
+                {gpsLoading
+                  ? "Location मिळवत आहे…"
+                  : gpsCaptured
+                    ? `✓ Location मिळाले (${form.latitude.toFixed(4)}, ${form.longitude.toFixed(4)})`
+                    : "शेताचे location घ्या (GPS)"}
+              </button>
+
+              {/* Success confirmation */}
+              {gpsCaptured && (
+                <div className="flex items-center gap-2 p-2.5 rounded-lg bg-primary/5 border border-primary/20 text-sm text-primary">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span className="font-medium">
+                    Farm location saved: {form.latitude.toFixed(6)}, {form.longitude.toFixed(6)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setGpsCaptured(false); update("latitude", 0); update("longitude", 0); }}
+                    className="ml-auto text-xs text-foreground/40 hover:text-destructive underline"
+                  >
+                    retake
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Submit */}
             <button
               type="submit"
               disabled={submitting}

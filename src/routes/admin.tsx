@@ -1,8 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { ExternalLink, Search, Download, Leaf, Users, Clock, ShieldCheck, Sprout } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
-import { getAllFarmers } from "@/lib/db";
+import {
+  ExternalLink, Search, Download, Leaf, Users,
+  Clock, ShieldCheck, Sprout, Zap, Loader2,
+} from "lucide-react";
+import { getAllFarmers, updateFarmerMintHash, insertToken, subscribeToFarmers } from "@/lib/db";
+import { mintTokens } from "@/lib/blockchain";
+import { CONFIG } from "@/lib/config";
 import { requireAuth } from "@/lib/auth-guard";
 
 export const Route = createFileRoute("/admin")({
@@ -28,11 +32,13 @@ type Farmer = {
 };
 
 function AdminPage() {
-  const [farmers, setFarmers] = useState<Farmer[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [farmers, setFarmers]     = useState<Farmer[]>([]);
+  const [loading, setLoading]     = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [pulseIds, setPulseIds] = useState<Set<string>>(new Set());
+  const [search, setSearch]       = useState("");
+  const [pulseIds, setPulseIds]   = useState<Set<string>>(new Set());
+  const [mintingId, setMintingId] = useState<string | null>(null);
+  const [mintError, setMintError] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -50,62 +56,98 @@ function AdminPage() {
     load();
     const interval = setInterval(load, 30000);
 
-    const channel = supabase
-      .channel("farmers-admin")
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "farmers" },
-        (payload) => {
-          const newRow = payload.new as Farmer;
-          const oldRow = payload.old as Farmer;
-          if (oldRow?.token_status !== "minted" && newRow?.token_status === "minted") {
-            setPulseIds((s) => new Set(s).add(newRow.id));
-            setTimeout(() => {
-              setPulseIds((s) => {
-                const n = new Set(s);
-                n.delete(newRow.id);
-                return n;
-              });
-            }, 3000);
-          }
-          load();
-        },
-      )
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "farmers" },
-        () => load(),
-      )
-      .subscribe();
+    // Realtime subscription via centralized db function
+    const channel = subscribeToFarmers((payload: any) => {
+      const newRow = payload.new as Farmer;
+      const oldRow = payload.old as Farmer;
+      if (oldRow?.token_status !== "minted" && newRow?.token_status === "minted") {
+        setPulseIds((s) => new Set(s).add(newRow.id));
+        setTimeout(() => {
+          setPulseIds((s) => { const n = new Set(s); n.delete(newRow.id); return n; });
+        }, 3000);
+      }
+      load();
+    });
 
     return () => {
       clearInterval(interval);
-      supabase.removeChannel(channel);
+      channel.unsubscribe();
     };
   }, []);
 
-  const stats = useMemo(() => {
-    const total = farmers.length;
-    const pending = farmers.filter((f) => f.token_status === "pending").length;
-    const minted = farmers.filter((f) => f.token_status === "minted").length;
-    const co2 = farmers.reduce((s, f) => s + (f.co2_tonnes ?? 0), 0);
-    return { total, pending, minted, co2 };
-  }, [farmers]);
+  const stats = useMemo(() => ({
+    total:   farmers.length,
+    pending: farmers.filter((f) => f.token_status === "pending").length,
+    minted:  farmers.filter((f) => f.token_status === "minted").length,
+    co2:     farmers.reduce((s, f) => s + (f.co2_tonnes ?? 0), 0),
+  }), [farmers]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return farmers;
     return farmers.filter(
-      (f) =>
-        f.name.toLowerCase().includes(q) ||
-        f.village.toLowerCase().includes(q),
+      (f) => f.name.toLowerCase().includes(q) || f.village.toLowerCase().includes(q),
     );
   }, [farmers, search]);
 
+  async function handleMint(f: Farmer) {
+    setMintError(null);
+    setMintingId(f.id);
+    try {
+      console.log("[admin] minting for farmer =", f.id, f.name);
+
+      const ndvi   = f.ndvi_score ?? 0.5;
+      const co2    = f.co2_tonnes ?? f.farm_area_acres * 0.5;
+      const amount = Math.round(co2 * 10);
+
+      const { txHash, tokenId } = await mintTokens(
+        f.id,
+        f.latitude.toString(),
+        f.longitude.toString(),
+        ndvi.toString(),
+        co2.toString(),
+        "0x573874dAbAe68fbE01b0679585dEd85D3C36Bf2A",
+        amount,
+      );
+
+      console.log("[admin] mint success txHash =", txHash, "tokenId =", tokenId);
+
+      await updateFarmerMintHash(f.id, txHash, tokenId);
+
+      await insertToken({
+        farmer_id:        f.id,
+        farmer_name:      f.name,
+        village:          f.village,
+        taluka:           f.taluka,
+        token_amount:     co2,
+        co2_tonnes:       co2,
+        ndvi_score:       ndvi,
+        farm_gps_lat:     f.latitude,
+        farm_gps_lon:     f.longitude,
+        farm_area_acres:  f.farm_area_acres,
+        polygonscan_hash: txHash,
+        status:           "available",
+        price_inr:        Math.round(co2 * CONFIG.pricing.pricePerTonneCO2),
+      });
+
+      setPulseIds((s) => new Set(s).add(f.id));
+      setTimeout(() => {
+        setPulseIds((s) => { const n = new Set(s); n.delete(f.id); return n; });
+      }, 3000);
+
+      await load();
+    } catch (e: any) {
+      console.error("[admin] mint error =", e?.message);
+      setMintError(`Mint failed for ${f.name}: ${e?.message}`);
+    } finally {
+      setMintingId(null);
+    }
+  }
+
   function exportCSV() {
     const headers = [
-      "Name", "Mobile", "Village", "Taluka", "Gat Number", "Latitude", "Longitude",
-      "Farm Area (acres)", "NDVI", "CO2 Tonnes", "Token Status", "Polygonscan Hash", "Registered At",
+      "Name","Mobile","Village","Taluka","Gat Number","Latitude","Longitude",
+      "Farm Area (acres)","NDVI","CO2 Tonnes","Token Status","Polygonscan Hash","Registered At",
     ];
     const rows = filtered.map((f) => [
       f.name, f.mobile, f.village, f.taluka, f.gat_number, f.latitude, f.longitude,
@@ -116,9 +158,9 @@ function AdminPage() {
       .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
       .join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
     a.download = `farmers-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
@@ -136,11 +178,19 @@ function AdminPage() {
         <span className="text-xs text-foreground/50">Auto-refreshes every 30s · realtime enabled</span>
       </header>
 
+      {mintError && (
+        <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700 flex items-start gap-2">
+          <span className="shrink-0">⚠</span>
+          <span>{mintError}</span>
+          <button onClick={() => setMintError(null)} className="ml-auto text-red-400 hover:text-red-600">✕</button>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Total Farmers" value={stats.total} icon={<Users className="w-5 h-5" />} />
-        <StatCard label="Pending Verification" value={stats.pending} icon={<Clock className="w-5 h-5" />} />
-        <StatCard label="Tokens Minted" value={stats.minted} icon={<ShieldCheck className="w-5 h-5" />} />
-        <StatCard label="Total CO₂ Verified" value={`${stats.co2.toFixed(2)} t`} icon={<Leaf className="w-5 h-5" />} />
+        <StatCard label="Total Farmers"        value={stats.total}                    icon={<Users      className="w-5 h-5" />} />
+        <StatCard label="Pending Verification" value={stats.pending}                  icon={<Clock      className="w-5 h-5" />} />
+        <StatCard label="Tokens Minted"        value={stats.minted}                   icon={<ShieldCheck className="w-5 h-5" />} />
+        <StatCard label="Total CO₂ Verified"   value={`${stats.co2.toFixed(2)} t`}   icon={<Leaf       className="w-5 h-5" />} />
       </div>
 
       <div className="kc-card !p-0 overflow-hidden">
@@ -163,25 +213,21 @@ function AdminPage() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50 text-xs uppercase tracking-wider text-foreground/60">
               <tr>
-                {["Name","Mobile","Village","Gat","GPS","Area","NDVI","CO₂","Status","Polygonscan","Registered"].map((h) => (
+                {["Name","Mobile","Village","Gat","GPS","Area","NDVI","CO₂","Status","Polygonscan","Registered","Mint"].map((h) => (
                   <th key={h} className="px-3 py-3 text-left font-semibold whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={11} className="text-center py-10 text-foreground/50">Loading...</td></tr>
+                <tr><td colSpan={12} className="text-center py-10 text-foreground/50">Loading...</td></tr>
               )}
               {!loading && loadError && (
-                <tr>
-                  <td colSpan={11} className="text-center py-10 text-destructive">
-                    {loadError}
-                  </td>
-                </tr>
+                <tr><td colSpan={12} className="text-center py-10 text-destructive">{loadError}</td></tr>
               )}
               {!loading && !loadError && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="text-center py-12 text-foreground/50">
+                  <td colSpan={12} className="text-center py-12 text-foreground/50">
                     <Sprout className="w-8 h-8 mx-auto text-primary/30 mb-2" />
                     No farmers registered yet.
                   </td>
@@ -206,7 +252,7 @@ function AdminPage() {
                   <td className="px-3 py-2.5">
                     {f.polygonscan_hash ? (
                       <a
-                        href={`https://polygonscan.com/tx/${f.polygonscan_hash}`}
+                        href={`${CONFIG.blockchain.explorerUrl}/tx/${f.polygonscan_hash}`}
                         target="_blank" rel="noreferrer"
                         className="inline-flex items-center gap-1 text-secondary font-semibold text-xs hover:underline"
                       >
@@ -218,6 +264,31 @@ function AdminPage() {
                   </td>
                   <td className="px-3 py-2.5 text-xs text-foreground/60 whitespace-nowrap">
                     {new Date(f.created_at).toLocaleString()}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {f.token_status === "pending" ? (
+                      <button
+                        type="button"
+                        disabled={mintingId === f.id}
+                        onClick={() => handleMint(f)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-primary text-white text-xs font-bold hover:bg-primary/90 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {mintingId === f.id
+                          ? <Loader2 className="w-3 h-3 animate-spin" />
+                          : <Zap className="w-3 h-3" />}
+                        {mintingId === f.id ? "Minting…" : "Mint Token"}
+                      </button>
+                    ) : f.token_status === "minted" && f.polygonscan_hash ? (
+                      <a
+                        href={`${CONFIG.blockchain.explorerUrl}/tx/${f.polygonscan_hash}`}
+                        target="_blank" rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-green-600 text-xs font-semibold hover:underline"
+                      >
+                        Minted <ExternalLink className="w-3 h-3" />
+                      </a>
+                    ) : (
+                      <span className="text-foreground/30 text-xs">—</span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -243,10 +314,10 @@ function StatCard({ label, value, icon }: { label: string; value: number | strin
 
 function StatusBadge({ s }: { s: string }) {
   const map: Record<string, string> = {
-    pending: "kc-badge-pending",
+    pending:    "kc-badge-pending",
     processing: "kc-badge-processing",
-    minted: "kc-badge-minted",
-    failed: "kc-badge-failed",
+    minted:     "kc-badge-minted",
+    failed:     "kc-badge-failed",
   };
   return <span className={`kc-badge ${map[s] ?? "kc-badge-pending"}`}>{s}</span>;
 }

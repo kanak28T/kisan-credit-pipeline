@@ -1,17 +1,41 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Sprout, LogOut, User as UserIcon } from "lucide-react";
+import { Sprout, LogOut, User as UserIcon, Wallet } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { RegisterLink } from "@/components/RegisterLink";
+import { connectWallet } from "@/lib/blockchain";
+import { useState } from "react";
 
 export function Navbar() {
   const navigate = useNavigate();
   const { user, signOut } = useAuth();
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [walletBusy, setWalletBusy] = useState(false);
+
   const linkBase =
     "text-sm font-semibold text-foreground/80 hover:text-primary transition-colors px-3 py-2 rounded-md";
+
+  // Short display: 0x5738...Bf2A
+  function shortAddress(addr: string) {
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  }
+
+  async function handleConnectWallet() {
+    if (walletAddress) return; // already connected
+    setWalletBusy(true);
+    try {
+      const { address } = await connectWallet();
+      setWalletAddress(address);
+    } catch (e: any) {
+      alert(e?.message ?? "Could not connect wallet.");
+    } finally {
+      setWalletBusy(false);
+    }
+  }
 
   return (
     <header className="w-full bg-white/95 backdrop-blur border-b border-border sticky top-0 z-40 shadow-sm">
       <nav className="max-w-7xl mx-auto flex items-center justify-between px-4 sm:px-6 py-3 gap-3">
+        {/* Logo */}
         <Link to="/" className="flex items-center gap-2 shrink-0">
           <Sprout className="w-7 h-7 text-primary" />
           <div className="leading-tight">
@@ -22,6 +46,7 @@ export function Navbar() {
           </div>
         </Link>
 
+        {/* Nav links */}
         <div className="hidden md:flex items-center gap-1">
           <RegisterLink
             className={linkBase}
@@ -37,7 +62,30 @@ export function Navbar() {
           </Link>
         </div>
 
+        {/* Right side actions */}
         <div className="flex items-center gap-2">
+
+          {/* ── Connect Wallet button ── */}
+          <button
+            type="button"
+            onClick={handleConnectWallet}
+            disabled={walletBusy}
+            title={walletAddress ? `Connected: ${walletAddress}` : "Connect MetaMask wallet"}
+            className={`hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full transition
+              ${walletAddress
+                ? "bg-green-100 text-green-700 border border-green-300 cursor-default"
+                : "bg-white border border-border text-foreground/70 hover:border-primary hover:text-primary"
+              } disabled:opacity-60`}
+          >
+            <Wallet className="w-3.5 h-3.5 shrink-0" />
+            {walletBusy
+              ? "Connecting…"
+              : walletAddress
+                ? shortAddress(walletAddress)
+                : "Connect Wallet"}
+          </button>
+
+          {/* ── Auth section ── */}
           {user ? (
             <>
               <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full bg-primary/10 text-primary max-w-[140px] truncate">
@@ -63,6 +111,7 @@ export function Navbar() {
               signedOutLabel="Farmer login"
             />
           )}
+
           <Link
             to="/registry"
             className="md:hidden kc-btn-outline-teal text-sm px-3 py-2"

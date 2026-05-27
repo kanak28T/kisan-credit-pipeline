@@ -9,30 +9,28 @@ import {
   Sprout,
   ArrowRight,
   CheckCircle2,
+  User,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { formatAuthError, getAuthRedirectUrl } from "@/lib/auth";
 import { redirectIfAuthenticated } from "@/lib/auth-guard";
 
-type LoginSearch = { error?: string };
-
-export const Route = createFileRoute("/login")({
-  validateSearch: (search: Record<string, unknown>): LoginSearch => ({
-    error: typeof search.error === "string" ? search.error : undefined,
-  }),
+export const Route = createFileRoute("/signup")({
   beforeLoad: () => redirectIfAuthenticated(),
-  component: SignInPage,
+  component: SignUpPage,
 });
 
-function SignInPage() {
+function SignUpPage() {
   const navigate = useNavigate();
-  const { error: urlError } = Route.useSearch();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [emailSent, setEmailSent] = useState(false);
 
   const emailRef = useRef<HTMLInputElement>(null);
 
@@ -40,14 +38,8 @@ function SignInPage() {
     emailRef.current?.focus();
   }, []);
 
-  useEffect(() => {
-    if (!urlError) return;
-    try {
-      setError(formatAuthError(decodeURIComponent(urlError)));
-    } catch {
-      setError(formatAuthError(urlError));
-    }
-  }, [urlError]);
+  // Password strength
+  const strength = getPasswordStrength(password);
 
   async function handleGoogle() {
     setError(null);
@@ -63,7 +55,7 @@ function SignInPage() {
       if (err) throw err;
       if (!data?.url) throw new Error("Google sign-in is not enabled.");
     } catch (e: any) {
-      setError(formatAuthError(e?.message ?? "Google sign-in failed."));
+      setError(formatAuthError(e?.message ?? "Google sign-up failed."));
       setBusy(false);
     }
   }
@@ -73,23 +65,41 @@ function SignInPage() {
     setError(null);
 
     const trimmedEmail = email.trim().toLowerCase();
-    if (!trimmedEmail || !password) {
-      setError("Please enter your email and password.");
+
+    if (!trimmedEmail) {
+      setError("Please enter your email address.");
+      return;
+    }
+    if (!password) {
+      setError("Please enter a password.");
+      return;
+    }
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
       return;
     }
 
     setBusy(true);
     try {
-      const { data, error: err } = await supabase.auth.signInWithPassword({
+      const { data, error: err } = await supabase.auth.signUp({
         email: trimmedEmail,
         password,
+        options: { emailRedirectTo: getAuthRedirectUrl() },
       });
       if (err) throw err;
-      if (!data.session) {
-        setError("Sign-in failed — no session returned. Please try again.");
+
+      // Email confirmation disabled → session returned immediately
+      if (data.session) {
+        navigate({ to: "/register", replace: true });
         return;
       }
-      navigate({ to: "/register", replace: true });
+
+      // Email confirmation enabled → show success state
+      setEmailSent(true);
     } catch (e: any) {
       setError(formatAuthError(e?.message ?? "Something went wrong. Please try again."));
     } finally {
@@ -97,11 +107,45 @@ function SignInPage() {
     }
   }
 
+  if (emailSent) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+        <div className="w-full max-w-md bg-white rounded-2xl shadow-sm border border-gray-200 p-10 text-center">
+          <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-5">
+            <Mail className="w-8 h-8 text-primary" />
+          </div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">Check your email</h1>
+          <p className="text-gray-500 text-sm mb-1">
+            We sent a confirmation link to
+          </p>
+          <p className="font-semibold text-gray-800 mb-5">{email}</p>
+          <p className="text-gray-400 text-xs mb-6">
+            Click the link in the email to activate your account, then sign in.
+          </p>
+          <div className="space-y-3">
+            <Link
+              to="/login"
+              className="block w-full py-2.5 px-4 rounded-lg bg-primary text-white text-sm font-semibold text-center hover:bg-primary/90 transition"
+            >
+              Go to Sign in
+            </Link>
+            <button
+              type="button"
+              onClick={() => setEmailSent(false)}
+              className="block w-full py-2.5 px-4 rounded-lg border border-gray-200 text-gray-600 text-sm font-medium hover:bg-gray-50 transition"
+            >
+              Use a different email
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex">
       {/* ── Left decorative panel ── */}
       <div className="hidden lg:flex lg:w-1/2 relative flex-col justify-end p-12 bg-primary overflow-hidden">
-        {/* Background pattern */}
         <div className="absolute inset-0 opacity-10">
           {Array.from({ length: 6 }).map((_, i) => (
             <div
@@ -127,10 +171,10 @@ function SignInPage() {
           </div>
 
           <h2 className="text-4xl font-bold leading-tight mb-4">
-            Welcome back to<br />किसान Credit
+            Join किसान Credit<br />today
           </h2>
           <p className="text-white/75 text-lg mb-8">
-            Trusted carbon credits from real Nagpur farms.
+            Register your farm and start earning from carbon credits.
           </p>
 
           <ul className="space-y-3">
@@ -148,7 +192,7 @@ function SignInPage() {
         </div>
       </div>
 
-      {/* ── Right sign-in panel ── */}
+      {/* ── Right sign-up panel ── */}
       <div className="flex-1 flex items-center justify-center bg-gray-50 px-4 py-12">
         <div className="w-full max-w-md">
           {/* Mobile logo */}
@@ -161,11 +205,11 @@ function SignInPage() {
 
           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
             <div className="mb-7">
-              <h1 className="text-2xl font-bold text-gray-900">Sign in</h1>
+              <h1 className="text-2xl font-bold text-gray-900">Create account</h1>
               <p className="mt-1 text-sm text-gray-500">
-                Don't have an account?{" "}
-                <Link to="/signup" className="text-primary font-semibold hover:underline">
-                  Create one
+                Already have an account?{" "}
+                <Link to="/login" className="text-primary font-semibold hover:underline">
+                  Sign in
                 </Link>
               </p>
             </div>
@@ -221,17 +265,9 @@ function SignInPage() {
 
               {/* Password */}
               <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label htmlFor="password" className="block text-sm font-semibold text-gray-700">
-                    Password
-                  </label>
-                  <Link
-                    to="/forgot-password"
-                    className="text-xs text-primary hover:underline font-medium"
-                  >
-                    Forgot password?
-                  </Link>
-                </div>
+                <label htmlFor="password" className="block text-sm font-semibold text-gray-700 mb-1.5">
+                  Password
+                </label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
                   <input
@@ -239,8 +275,8 @@ function SignInPage() {
                     type={showPassword ? "text" : "password"}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    autoComplete="current-password"
-                    placeholder="Your password"
+                    autoComplete="new-password"
+                    placeholder="Min. 6 characters"
                     disabled={busy}
                     className="w-full pl-10 pr-10 py-2.5 rounded-lg border border-gray-200 bg-white text-gray-900 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition disabled:opacity-50"
                   />
@@ -254,6 +290,72 @@ function SignInPage() {
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
+
+                {/* Password strength bar */}
+                {password.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    <div className="flex gap-1">
+                      {[1, 2, 3, 4].map((level) => (
+                        <div
+                          key={level}
+                          className={`h-1 flex-1 rounded-full transition-colors ${
+                            strength.score >= level
+                              ? strength.score <= 1
+                                ? "bg-red-400"
+                                : strength.score <= 2
+                                  ? "bg-yellow-400"
+                                  : strength.score <= 3
+                                    ? "bg-blue-400"
+                                    : "bg-green-500"
+                              : "bg-gray-200"
+                          }`}
+                        />
+                      ))}
+                    </div>
+                    <p className={`text-xs font-medium ${strength.color}`}>{strength.label}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Confirm password */}
+              <div>
+                <label htmlFor="confirm-password" className="block text-sm font-semibold text-gray-700 mb-1.5">
+                  Confirm password
+                </label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+                  <input
+                    id="confirm-password"
+                    type={showConfirm ? "text" : "password"}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    autoComplete="new-password"
+                    placeholder="Re-enter your password"
+                    disabled={busy}
+                    className={`w-full pl-10 pr-10 py-2.5 rounded-lg border bg-white text-gray-900 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 transition disabled:opacity-50 ${
+                      confirmPassword.length > 0 && confirmPassword !== password
+                        ? "border-red-300 focus:ring-red-200 focus:border-red-400"
+                        : confirmPassword.length > 0 && confirmPassword === password
+                          ? "border-green-400 focus:ring-green-200 focus:border-green-500"
+                          : "border-gray-200 focus:ring-primary/30 focus:border-primary"
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirm((v) => !v)}
+                    tabIndex={-1}
+                    aria-label={showConfirm ? "Hide password" : "Show password"}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition"
+                  >
+                    {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                  {confirmPassword.length > 0 && confirmPassword === password && (
+                    <CheckCircle2 className="absolute right-9 top-1/2 -translate-y-1/2 w-4 h-4 text-green-500" />
+                  )}
+                </div>
+                {confirmPassword.length > 0 && confirmPassword !== password && (
+                  <p className="mt-1 text-xs text-red-500">Passwords do not match</p>
+                )}
               </div>
 
               {/* Error */}
@@ -273,11 +375,17 @@ function SignInPage() {
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <>
-                    Sign in
+                    Create account
                     <ArrowRight className="w-4 h-4" />
                   </>
                 )}
               </button>
+
+              <p className="text-center text-xs text-gray-400">
+                By creating an account you agree to our{" "}
+                <span className="text-gray-500 font-medium">Terms of Service</span> and{" "}
+                <span className="text-gray-500 font-medium">Privacy Policy</span>.
+              </p>
             </form>
           </div>
 
@@ -290,4 +398,29 @@ function SignInPage() {
       </div>
     </div>
   );
+}
+
+// ── Password strength helper ──────────────────────────────────────────────────
+function getPasswordStrength(password: string): {
+  score: number;
+  label: string;
+  color: string;
+} {
+  if (!password) return { score: 0, label: "", color: "" };
+
+  let score = 0;
+  if (password.length >= 6) score++;
+  if (password.length >= 10) score++;
+  if (/[A-Z]/.test(password) && /[a-z]/.test(password)) score++;
+  if (/[0-9]/.test(password) || /[^A-Za-z0-9]/.test(password)) score++;
+
+  const levels = [
+    { label: "Too weak", color: "text-red-500" },
+    { label: "Weak", color: "text-red-500" },
+    { label: "Fair", color: "text-yellow-500" },
+    { label: "Good", color: "text-blue-500" },
+    { label: "Strong", color: "text-green-600" },
+  ];
+
+  return { score, ...levels[score] };
 }
