@@ -1,8 +1,8 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Sprout, LogOut, User as UserIcon, Wallet } from "lucide-react";
+import { Sprout, LogOut, User as UserIcon, Wallet, Settings } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { RegisterLink } from "@/components/RegisterLink";
 import { connectWallet } from "@/lib/blockchain";
+import { CONFIG } from "@/lib/config";
 import { useState } from "react";
 
 export function Navbar() {
@@ -14,13 +14,12 @@ export function Navbar() {
   const linkBase =
     "text-sm font-semibold text-foreground/80 hover:text-primary transition-colors px-3 py-2 rounded-md";
 
-  // Short display: 0x5738...Bf2A
   function shortAddress(addr: string) {
     return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   }
 
   async function handleConnectWallet() {
-    if (walletAddress) return; // already connected
+    if (walletAddress) return;
     setWalletBusy(true);
     try {
       const { address } = await connectWallet();
@@ -48,24 +47,26 @@ export function Navbar() {
 
         {/* Nav links */}
         <div className="hidden md:flex items-center gap-1">
-          <RegisterLink
-            className={linkBase}
-            signedInLabel="My farm"
-            signedOutLabel="For farmers"
-            showArrow={false}
-          />
+          {user ? (
+            <Link to="/dashboard" className={linkBase}>My Farm</Link>
+          ) : (
+            <Link to="/login" className={linkBase}>For farmers</Link>
+          )}
           <Link to="/registry" className={`${linkBase} text-secondary hover:text-secondary`}>
             Buy credits
           </Link>
-          <Link to="/about" className={linkBase}>
-            About
-          </Link>
+          <Link to="/about" className={linkBase}>About</Link>
+          {/* Admin link — only visible to admin email */}
+          {user?.email === CONFIG.app.adminEmail && (
+            <Link to="/admin" className={`${linkBase} text-purple-600 hover:text-purple-700`}>
+              <Settings className="w-4 h-4 inline mr-1" />Admin
+            </Link>
+          )}
         </div>
 
-        {/* Right side actions */}
+        {/* Right side */}
         <div className="flex items-center gap-2">
-
-          {/* ── Connect Wallet button ── */}
+          {/* Connect Wallet */}
           <button
             type="button"
             onClick={handleConnectWallet}
@@ -78,14 +79,10 @@ export function Navbar() {
               } disabled:opacity-60`}
           >
             <Wallet className="w-3.5 h-3.5 shrink-0" />
-            {walletBusy
-              ? "Connecting…"
-              : walletAddress
-                ? shortAddress(walletAddress)
-                : "Connect Wallet"}
+            {walletBusy ? "Connecting…" : walletAddress ? shortAddress(walletAddress) : "Connect Wallet"}
           </button>
 
-          {/* ── Auth section ── */}
+          {/* Auth */}
           {user ? (
             <>
               <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full bg-primary/10 text-primary max-w-[140px] truncate">
@@ -94,10 +91,7 @@ export function Navbar() {
               </span>
               <button
                 type="button"
-                onClick={async () => {
-                  await signOut();
-                  navigate({ to: "/" });
-                }}
+                onClick={async () => { await signOut(); navigate({ to: "/" }); }}
                 className="inline-flex items-center gap-1 text-sm font-semibold text-foreground/60 hover:text-destructive px-2 py-2"
                 aria-label="Sign out"
               >
@@ -105,17 +99,12 @@ export function Navbar() {
               </button>
             </>
           ) : (
-            <RegisterLink
-              className="kc-btn-primary text-sm px-4 py-2"
-              signedInLabel="My farm"
-              signedOutLabel="Farmer login"
-            />
+            <Link to="/login" className="kc-btn-primary text-sm px-4 py-2">
+              Farmer login
+            </Link>
           )}
 
-          <Link
-            to="/registry"
-            className="md:hidden kc-btn-outline-teal text-sm px-3 py-2"
-          >
+          <Link to="/registry" className="md:hidden kc-btn-outline-teal text-sm px-3 py-2">
             Buy
           </Link>
         </div>

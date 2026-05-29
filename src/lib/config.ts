@@ -34,6 +34,7 @@ export const CONFIG = {
   },
 
   app: {
-    url: (import.meta.env.VITE_APP_URL ?? "") as string,
+    url:        (import.meta.env.VITE_APP_URL   ?? "") as string,
+    adminEmail: (import.meta.env.VITE_ADMIN_EMAIL ?? "priyanshupatil336@gmail.com") as string,
   },
 } as const;

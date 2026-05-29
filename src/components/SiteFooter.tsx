@@ -50,6 +50,10 @@ export function SiteFooter() {
         >
           Unsplash
         </a>
+        {" · "}
+        <Link to="/admin" className="hover:text-primary transition">
+          Admin
+        </Link>
       </div>
     </footer>
   );

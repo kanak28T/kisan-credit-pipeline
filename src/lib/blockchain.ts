@@ -130,14 +130,25 @@ export async function mintTokens(
       ndviScore,
       co2Tonnes,
       BigInt(amount),
+      {
+        maxFeePerGas:         BigInt("50000000000"), // 50 gwei
+        maxPriorityFeePerGas: BigInt("30000000000"), // 30 gwei — above Amoy minimum 25 gwei
+      }
     );
     console.log("[blockchain] mintTokens: hash =", tx.hash);
 
     const receipt = await tx.wait();
     console.log("[blockchain] mintTokens: confirmed block =", receipt.blockNumber);
 
-    const counter = await contract.tokenCounter();
-    const tokenId = (counter - 1n).toString();
+    // Try tokenCounter — gracefully fallback if contract doesn't support it
+    let tokenId = "0";
+    try {
+      const counter = await contract.tokenCounter();
+      tokenId = (counter - 1n).toString();
+    } catch {
+      console.warn("[blockchain] mintTokens: tokenCounter() failed — using block number as tokenId");
+      tokenId = receipt.blockNumber?.toString() ?? "0";
+    }
     console.log("[blockchain] mintTokens: tokenId =", tokenId);
 
     return { txHash: tx.hash, tokenId, receipt };

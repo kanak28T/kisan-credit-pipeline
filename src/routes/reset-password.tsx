@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Loader2, Lock, Sprout, Eye, EyeOff } from "lucide-react";
+import { Loader2, Lock, Sprout, Eye, EyeOff, CheckCircle2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { IMAGES } from "@/lib/images";
 
@@ -11,32 +11,81 @@ export const Route = createFileRoute("/reset-password")({
 
 function ResetPasswordPage() {
   const navigate = useNavigate();
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
+  const [password, setPassword]         = useState("");
+  const [confirm, setConfirm]           = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [ready, setReady] = useState(false);
-  const [invalid, setInvalid] = useState(false);
+  const [busy, setBusy]                 = useState(false);
+  const [error, setError]               = useState<string | null>(null);
+  const [ready, setReady]               = useState(false);
+  const [invalid, setInvalid]           = useState(false);
+  const [done, setDone]                 = useState(false);
 
-  // Supabase sends the user here with a recovery token in the URL hash.
-  // We need to wait for the auth state to switch to PASSWORD_RECOVERY.
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "PASSWORD_RECOVERY") {
-        setReady(true);
+    let cancelled = false;
+
+    async function init() {
+      // Supabase sends reset links with tokens in the URL hash like:
+      // /reset-password#access_token=xxx&type=recovery
+      // Since detectSessionInUrl is false, we must exchange it manually.
+
+      const hash   = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const search = new URLSearchParams(window.location.search);
+
+      const accessToken  = hash.get("access_token")  || search.get("access_token");
+      const refreshToken = hash.get("refresh_token") || search.get("refresh_token");
+      const type         = hash.get("type")           || search.get("type");
+
+      // Also handle PKCE code flow (newer Supabase versions)
+      const code = search.get("code");
+
+      if (code) {
+        // PKCE flow — exchange code for session
+        const { error: exchErr } = await supabase.auth.exchangeCodeForSession(code);
+        if (exchErr) {
+          if (!cancelled) setInvalid(true);
+          return;
+        }
+        if (!cancelled) setReady(true);
+        return;
       }
-    });
 
-    // If no recovery event fires within 5 seconds, the link is invalid/expired
-    const timeout = setTimeout(() => {
-      setInvalid(true);
-    }, 5000);
+      if (accessToken && type === "recovery") {
+        // Set the session from the recovery token
+        const { error: sessErr } = await supabase.auth.setSession({
+          access_token:  accessToken,
+          refresh_token: refreshToken ?? "",
+        });
+        if (sessErr) {
+          if (!cancelled) setInvalid(true);
+          return;
+        }
+        // Clear the hash from URL bar so refresh doesn't re-use the token
+        window.history.replaceState({}, "", "/reset-password");
+        if (!cancelled) setReady(true);
+        return;
+      }
 
-    return () => {
-      subscription.unsubscribe();
-      clearTimeout(timeout);
-    };
+      // No token in URL — listen for PASSWORD_RECOVERY event as fallback
+      // (fires if user navigated here from an already-active session)
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+        if (event === "PASSWORD_RECOVERY" && !cancelled) {
+          setReady(true);
+        }
+      });
+
+      // If nothing fires in 4 seconds, mark as invalid
+      const timeout = setTimeout(() => {
+        if (!cancelled) setInvalid(true);
+      }, 4000);
+
+      return () => {
+        subscription.unsubscribe();
+        clearTimeout(timeout);
+      };
+    }
+
+    init();
+    return () => { cancelled = true; };
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -56,9 +105,9 @@ function ResetPasswordPage() {
     try {
       const { error: err } = await supabase.auth.updateUser({ password });
       if (err) throw err;
-      // Sign out so user logs in fresh with new password
+      setDone(true);
       await supabase.auth.signOut();
-      navigate({ to: "/login", replace: true });
+      setTimeout(() => navigate({ to: "/login", replace: true }), 2000);
     } catch (e: any) {
       setError(e?.message ?? "Something went wrong. Please try again.");
     } finally {
@@ -86,89 +135,117 @@ function ResetPasswordPage() {
       </div>
 
       {/* Right panel */}
-      <div className="flex items-center justify-center bg-[#f8faf8] px-4 py-10">
-        <div className="w-full max-w-md bg-white rounded-2xl shadow-lg border border-border p-8">
-          <h1 className="text-2xl font-bold text-center text-foreground">
-            Set new password
-          </h1>
-          <p className="mt-1 text-center text-sm text-foreground/60">
-            Choose a strong password for your account.
-          </p>
+      <div className="flex items-center justify-center bg-gray-50 px-4 py-10">
+        <div className="w-full max-w-md bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
 
-          {!ready ? (
-            <div className="mt-8 flex flex-col items-center gap-3 text-foreground/50">
-              <Loader2 className="w-8 h-8 animate-spin text-primary" />
-              <p className="text-sm">Verifying reset link…</p>
+          {/* ── Success state ── */}
+          {done && (
+            <div className="text-center py-4">
+              <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
+                <CheckCircle2 className="w-8 h-8 text-green-600" />
+              </div>
+              <h1 className="text-2xl font-bold text-gray-900">Password updated</h1>
+              <p className="mt-2 text-sm text-gray-500">Redirecting to sign in…</p>
+            </div>
+          )}
+
+          {/* ── Loading / invalid state ── */}
+          {!done && !ready && (
+            <div className="text-center py-4">
+              <h1 className="text-2xl font-bold text-gray-900 mb-6">Set new password</h1>
+              <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-3" />
+              <p className="text-sm text-gray-500">Verifying reset link…</p>
+
               {invalid && (
-                <div className="mt-2 text-center">
-                  <p className="text-sm text-destructive">
+                <div className="mt-6 space-y-3">
+                  <p className="text-sm text-red-600 font-medium">
                     This link is invalid or has expired.
+                  </p>
+                  <p className="text-xs text-gray-400">
+                    Reset links expire after 1 hour and can only be used once.
                   </p>
                   <Link
                     to="/forgot-password"
-                    className="mt-3 inline-block text-sm text-primary hover:underline font-semibold"
+                    className="inline-block mt-2 text-sm text-primary font-semibold hover:underline"
                   >
-                    Request a new reset link
+                    Request a new reset link →
                   </Link>
                 </div>
               )}
             </div>
-          ) : (
-            <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-              <div>
-                <label className="kc-label">New Password</label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-foreground/40" />
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="kc-input pl-10 pr-10"
-                    minLength={6}
-                    placeholder="Min. 6 characters"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((v) => !v)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-foreground/40 hover:text-foreground"
-                    tabIndex={-1}
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className="kc-label">Confirm Password</label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-foreground/40" />
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    value={confirm}
-                    onChange={(e) => setConfirm(e.target.value)}
-                    className="kc-input pl-10"
-                    minLength={6}
-                    placeholder="Repeat password"
-                  />
-                </div>
-              </div>
-
-              {error && (
-                <div className="p-3 rounded-lg border border-destructive/30 bg-destructive/5 text-sm text-destructive">
-                  {error}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={busy}
-                className="w-full kc-btn-primary py-3 rounded-lg inline-flex items-center justify-center gap-2"
-              >
-                {busy && <Loader2 className="w-4 h-4 animate-spin" />}
-                Update password
-              </button>
-            </form>
           )}
+
+          {/* ── Form state ── */}
+          {!done && ready && (
+            <>
+              <h1 className="text-2xl font-bold text-gray-900 mb-1">Set new password</h1>
+              <p className="text-sm text-gray-500 mb-6">Choose a strong password for your account.</p>
+
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+                    New Password
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="w-full pl-10 pr-10 py-2.5 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition"
+                      minLength={6}
+                      placeholder="Min. 6 characters"
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      tabIndex={-1}
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+                    Confirm Password
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      value={confirm}
+                      onChange={(e) => setConfirm(e.target.value)}
+                      className="w-full pl-10 py-2.5 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition"
+                      minLength={6}
+                      placeholder="Repeat password"
+                    />
+                  </div>
+                  {confirm.length > 0 && confirm !== password && (
+                    <p className="mt-1 text-xs text-red-500">Passwords do not match</p>
+                  )}
+                </div>
+
+                {error && (
+                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+                    {error}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-primary text-white text-sm font-semibold hover:bg-primary/90 transition disabled:opacity-60"
+                >
+                  {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+                  Update password
+                </button>
+              </form>
+            </>
+          )}
+
         </div>
       </div>
     </div>

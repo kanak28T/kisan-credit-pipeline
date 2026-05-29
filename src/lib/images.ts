@@ -60,3 +60,4 @@ export function farmImageForId(id: string): string {
   for (let i = 0; i < id.length; i++) hash = (hash + id.charCodeAt(i)) % FARM_CARD_IMAGES.length;
   return FARM_CARD_IMAGES[hash]!;
 }
+  

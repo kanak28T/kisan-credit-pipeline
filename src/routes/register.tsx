@@ -1,6 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { MapPin, CheckCircle2, Loader2 } from "lucide-react";
+import { MapPin, CheckCircle2, Loader2, ArrowRight } from "lucide-react";
 import { insertFarmer, type FarmerInput } from "@/lib/db";
 import { triggerN8NWebhook } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
@@ -48,7 +48,7 @@ function RegisterPage() {
   function captureGPS() {
     setError(null);
     if (typeof navigator === "undefined" || !navigator.geolocation) {
-      setError("या फोनवर location चालू नाही / Location not available.");
+      setError("या फोनवर location चालू नाही / Location not supported on this device.");
       return;
     }
     setGpsLoading(true);
@@ -59,11 +59,30 @@ function RegisterPage() {
         setGpsCaptured(true);
         setGpsLoading(false);
       },
-      () => {
+      (err) => {
         setGpsLoading(false);
-        setError("Location परवानगी द्या / Please allow location access.");
+        // err.code: 1=PERMISSION_DENIED, 2=POSITION_UNAVAILABLE, 3=TIMEOUT
+        if (err.code === 1) {
+          setError(
+            "Location access denied. Browser ne location block kiya hai.\n" +
+            "Fix: Address bar mein lock icon → Site settings → Location → Allow karo. " +
+            "Agar localhost use kar rahe ho toh Chrome mein http://localhost ko secure site mark karo ya phone pe test karo."
+          );
+        } else if (err.code === 2) {
+          setError(
+            "Location unavailable. GPS signal nahi mila.\n" +
+            "Phone ka GPS on karo aur open sky mein jaao, phir dobara try karo."
+          );
+        } else if (err.code === 3) {
+          setError(
+            "Location timeout. GPS response nahi aaya (15 sec).\n" +
+            "Phone ka GPS on hai? Open area mein jaao aur dobara try karo."
+          );
+        } else {
+          setError(`Location error (code ${err.code}): ${err.message}`);
+        }
       },
-      { enableHighAccuracy: true, timeout: 15000 },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
     );
   }
 
@@ -175,11 +194,18 @@ function RegisterPage() {
             <div className="mt-6 p-5 rounded-xl border-2 border-primary bg-primary/5">
               <div className="flex gap-3">
                 <CheckCircle2 className="w-8 h-8 text-primary shrink-0" />
-                <div>
+                <div className="flex-1">
                   <p className="font-bold text-primary text-lg">नोंदणी झाली!</p>
                   <p className="text-foreground/75 mt-1">
-                    आमची टीम तुमच्या शेताची पडताळणी करेल. लवकरच संपर्क करू.
+                    आमची टीम तुमच्या शेताची पडताळणी satellite data वापरून करेल.
+                    NDVI score आणि CO₂ tonnes calculate होताच तुम्हाला dashboard वर दिसेल.
                   </p>
+                  <Link
+                    to="/dashboard"
+                    className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-primary hover:underline"
+                  >
+                    माझे शेत पहा (My Farm Dashboard) <ArrowRight className="w-4 h-4" />
+                  </Link>
                 </div>
               </div>
             </div>
