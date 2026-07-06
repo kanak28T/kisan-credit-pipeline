@@ -148,8 +148,8 @@ src/
 
 ## Team
 
-- **Priyanshu Patil** — Frontend · Blockchain integration · Supabase
-- **Kanak Tembhure** — Satellite pipeline · Copernicus API · NDVI engine · Flask backend
+- **Priyanshu Patil** : Frontend · Blockchain integration · Supabase
+- **Kanak Tembhure** : Satellite pipeline · Copernicus API · NDVI engine · Flask backend
 
 ---
 
