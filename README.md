@@ -142,6 +142,9 @@ src/
 └── components/
     ├── Navbar.tsx
     └── SiteFooter.tsx
+docs/
+├── Team Aether_KisanCredit.pdf
+├── Video Project (1).mp4
 ```
 
 ---
